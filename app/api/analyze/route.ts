@@ -257,26 +257,23 @@ export async function POST(request: NextRequest) {
 
       const results: Record<string, any> = {}
 
-      // Run agents in batches of 2 to avoid rate limits
-      for (let i = 0; i < AGENTS.length; i += 2) {
-        const batch = AGENTS.slice(i, i + 2)
-        
-        const batchPromises = batch.map(async (agent) => {
-          send({ type: 'step_update', step: agent.name, status: 'running' })
+      // Run all 6 agents concurrently (20 concurrent limit)
+const agentPromises = AGENTS.map(async (agent) => {
+  send({ type: 'step_update', step: agent.name, status: 'running' })
 
-          try {
-            const agentUrl = agent.getUrl(baseUrl)
-            const result = await runTinyFishAgent(agentUrl, agent.goal)
-            results[agent.key] = result
-            send({ type: 'step_update', step: agent.name, status: 'done' })
-          } catch (error: any) {
-            console.error(`Agent ${agent.name} failed:`, error.message)
-            results[agent.key] = { error: error.message || 'Agent failed' }
-            send({ type: 'step_update', step: agent.name, status: 'error' })
-          }
-        })
+  try {
+    const agentUrl = agent.getUrl(baseUrl)
+    const result = await runTinyFishAgent(agentUrl, agent.goal)
+    results[agent.key] = result
+    send({ type: 'step_update', step: agent.name, status: 'done' })
+  } catch (error: any) {
+    console.error(`Agent ${agent.name} failed:`, error.message)
+    results[agent.key] = { error: error.message || 'Agent failed' }
+    send({ type: 'step_update', step: agent.name, status: 'error' })
+  }
+})
 
-        await Promise.all(batchPromises)
+await Promise.all(agentPromises)
       }
 
       // Generate AI summary
@@ -324,3 +321,4 @@ export async function POST(request: NextRequest) {
     },
   })
 }
+
