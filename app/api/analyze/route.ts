@@ -2,18 +2,32 @@ import { NextRequest } from 'next/server'
 import { runTinyFishAgent } from '@/lib/tinyfish'
 import { generateReport } from '@/lib/gemini'
 
-export const maxDuration = 300 // 5 minutes timeout
+export const maxDuration = 300
 
 const AGENTS = [
   {
     name: 'Company Profile',
     key: 'profile',
     getUrl: (base: string) => base,
-    goal: `Visit this page directly and extract company information.
+    goal: `Visit this website and extract company information.
+
+First, explore the site to find the About page, Homepage, or Company info.
+
+Extract:
+- Company name
+- What they do (one sentence)
+- Industry
+- Headquarters location
+- Regions they operate in
+- Products or services offered
+- Languages supported
+- Target customers
+- Key value propositions
+
 Return ONLY valid JSON:
 {
   "company_name": "",
-  "description": "one sentence what they do",
+  "description": "",
   "industry": "",
   "hq_location": "",
   "regions": [],
@@ -26,14 +40,21 @@ Return ONLY valid JSON:
   {
     name: 'Pricing Analysis',
     key: 'pricing',
-    getUrl: (base: string) => `${base}/pricing`,
-    goal: `Visit this page directly and extract ALL pricing information.
+    getUrl: (base: string) => base,
+    goal: `Visit this website and find their pricing page.
+
+Look for links containing: pricing, plans, price, cost, buy, subscribe, or similar.
+Check navigation menu and footer links.
+
+Once you find pricing, extract ALL pricing information.
+
 Return ONLY valid JSON:
 {
   "company": "",
   "product": "",
   "currency": "",
   "pricing_model": "",
+  "pricing_page_url": "",
   "free_trial": { "available": false, "duration": "" },
   "plans": [
     {
@@ -47,16 +68,31 @@ Return ONLY valid JSON:
   ],
   "enterprise_option": false,
   "promotions": []
+}
+
+If no pricing page found, return:
+{
+  "company": "",
+  "error": "No public pricing page found",
+  "pricing_model": "Contact sales or custom pricing"
 }`
   },
   {
     name: 'Hiring Signals',
     key: 'hiring',
-    getUrl: (base: string) => `${base}/careers`,
-    goal: `Visit this page directly and extract job listing information.
+    getUrl: (base: string) => base,
+    goal: `Visit this website and find their careers or jobs page.
+
+Look for links containing: careers, jobs, hiring, work with us, join us, open positions, or similar.
+Check navigation menu, footer links, or try common paths like /careers, /jobs.
+Also check if they use external job boards like lever.co, greenhouse.io, or ashbyhq.com.
+
+Once you find careers page, extract job listings.
+
 Return ONLY valid JSON:
 {
   "company": "",
+  "careers_page_url": "",
   "total_openings": 0,
   "jobs": [
     {
@@ -74,17 +110,31 @@ Return ONLY valid JSON:
     "key_skills_in_demand": [],
     "strategic_signals": []
   }
+}
+
+If no careers page found, return:
+{
+  "company": "",
+  "error": "No public careers page found",
+  "total_openings": "Unknown"
 }`
   },
   {
     name: 'Content Strategy',
     key: 'blog',
-    getUrl: (base: string) => `${base}/blog`,
-    goal: `Visit this page directly and extract the latest blog posts.
+    getUrl: (base: string) => base,
+    goal: `Visit this website and find their blog, news, updates, or content page.
+
+Look for links containing: blog, news, updates, changelog, resources, articles, insights, now, or similar.
+Check navigation menu, footer links, or try common paths.
+
+Once you find content page, extract the latest posts.
+
 Return ONLY valid JSON:
 {
   "company": "",
   "platform": "Blog",
+  "content_page_url": "",
   "posts": [
     {
       "title": "",
@@ -102,16 +152,25 @@ Return ONLY valid JSON:
     "target_audience": "",
     "competitive_mentions": []
   }
+}
+
+If no blog found, return:
+{
+  "company": "",
+  "error": "No public blog or news page found"
 }`
   },
   {
     name: 'Customer Reviews',
     key: 'reviews',
     getUrl: (base: string) => {
-      const domain = base.replace('https://', '').replace('http://', '').replace('www.', '')
+      const domain = base.replace('https://', '').replace('http://', '').replace('www.', '').split('/')[0]
       return `https://www.g2.com/search?query=${encodeURIComponent(domain)}`
     },
-    goal: `Visit the G2 reviews page directly and perform a deep extraction of all visible review data. Do not navigate away from the page.
+    goal: `You are on G2 search results. Find the company product page and click on it.
+
+Then perform a deep extraction of all visible review data. Do not navigate away unnecessarily.
+
 Return ONLY valid JSON:
 {
   "company": "",
@@ -137,13 +196,31 @@ Return ONLY valid JSON:
     "sentiment_trend": "",
     "reviewer_profile": ""
   }
+}
+
+If reviews not accessible, return:
+{
+  "company": "",
+  "error": "Could not access reviews",
+  "review_platform": "G2"
 }`
   },
   {
     name: 'Tech Stack',
     key: 'techStack',
     getUrl: (base: string) => base,
-    goal: `Visit this page directly and perform a deep analysis of all technologies being used on this website.
+    goal: `Visit this website and perform a deep analysis of all technologies being used.
+
+Check page source, scripts, meta tags, cookies, and network requests for:
+- JavaScript frameworks and libraries
+- Analytics and tracking tools
+- Advertising pixels
+- Chat or support widgets
+- Payment processors
+- CDN indicators
+- Font services
+- Marketing tools
+
 Return ONLY valid JSON:
 {
   "company": "",
@@ -165,12 +242,10 @@ Return ONLY valid JSON:
 export async function POST(request: NextRequest) {
   const { url } = await request.json()
 
-  // Ensure URL has protocol
   let baseUrl = url.trim()
   if (!baseUrl.startsWith('http')) {
     baseUrl = `https://${baseUrl}`
   }
-  // Remove trailing slash
   baseUrl = baseUrl.replace(/\/$/, '')
 
   const encoder = new TextEncoder()
@@ -182,23 +257,27 @@ export async function POST(request: NextRequest) {
 
       const results: Record<string, any> = {}
 
-      // Run all 6 agents concurrently
-      const agentPromises = AGENTS.map(async (agent) => {
-        send({ type: 'step_update', step: agent.name, status: 'running' })
+      // Run agents in batches of 2 to avoid rate limits
+      for (let i = 0; i < AGENTS.length; i += 2) {
+        const batch = AGENTS.slice(i, i + 2)
+        
+        const batchPromises = batch.map(async (agent) => {
+          send({ type: 'step_update', step: agent.name, status: 'running' })
 
-        try {
-          const agentUrl = agent.getUrl(baseUrl)
-          const result = await runTinyFishAgent(agentUrl, agent.goal)
-          results[agent.key] = result
-          send({ type: 'step_update', step: agent.name, status: 'done' })
-        } catch (error: any) {
-          console.error(`Agent ${agent.name} failed:`, error)
-          results[agent.key] = null
-          send({ type: 'step_update', step: agent.name, status: 'error' })
-        }
-      })
+          try {
+            const agentUrl = agent.getUrl(baseUrl)
+            const result = await runTinyFishAgent(agentUrl, agent.goal)
+            results[agent.key] = result
+            send({ type: 'step_update', step: agent.name, status: 'done' })
+          } catch (error: any) {
+            console.error(`Agent ${agent.name} failed:`, error.message)
+            results[agent.key] = { error: error.message || 'Agent failed' }
+            send({ type: 'step_update', step: agent.name, status: 'error' })
+          }
+        })
 
-      await Promise.all(agentPromises)
+        await Promise.all(batchPromises)
+      }
 
       // Generate AI summary
       send({ type: 'step_update', step: 'Generating Report', status: 'running' })
@@ -229,7 +308,7 @@ export async function POST(request: NextRequest) {
         send({ type: 'step_update', step: 'Generating Report', status: 'done' })
       } catch (error: any) {
         console.error('Report generation failed:', error)
-        send({ type: 'error', message: 'Report generation failed' })
+        send({ type: 'error', message: 'Report generation failed: ' + error.message })
         send({ type: 'step_update', step: 'Generating Report', status: 'error' })
       }
 
