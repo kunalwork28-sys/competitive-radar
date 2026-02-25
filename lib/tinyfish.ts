@@ -1,53 +1,51 @@
-const TINYFISH_API_URL = 'https://agent.tinyfish.ai/v1/automation/run-sse'
-
 export async function runTinyFishAgent(url: string, goal: string): Promise<any> {
-  const response = await fetch(TINYFISH_API_URL, {
-    method: 'POST',
+  const response = await fetch("https://agent.tinyfish.ai/v1/automation/run-sse", {
+    method: "POST",
     headers: {
-      'X-API-Key': process.env.TINYFISH_API_KEY || '',
-      'Content-Type': 'application/json',
+      "X-API-Key": process.env.TINYFISH_API_KEY!,
+      "Content-Type": "application/json",
     },
     body: JSON.stringify({ url, goal }),
-  })
+  });
 
   if (!response.ok) {
-    throw new Error(`TinyFish API error: ${response.status}`)
+    const errorText = await response.text();
+    console.error("TinyFish API error:", response.status, errorText);
+    throw new Error(`TinyFish API error: ${response.status}`);
   }
 
-  const text = await response.text()
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
 
-  // Parse SSE response to extract final result
-  const lines = text.split('\n')
-  let result = null
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
 
-  for (const line of lines) {
-    if (line.startsWith('data: ')) {
-      try {
-        const data = JSON.parse(line.replace('data: ', ''))
-        if (data.result) {
-          result = data.result
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+
+    for (const line of lines) {
+      if (line.startsWith("data: ")) {
+        try {
+          const event = JSON.parse(line.slice(6));
+
+          if (event.type === "PROGRESS") {
+            console.log(`TinyFish progress: ${event.purpose}`);
+          } else if (event.type === "COMPLETE") {
+            if (event.status === "COMPLETED") {
+              return event.resultJson;
+            }
+            throw new Error(event.error?.message || "Automation failed");
+          }
+        } catch (e: any) {
+          if (e.message === "Automation failed") throw e;
+          // JSON parse error, skip this line
         }
-        if (data.output) {
-          result = data.output
-        }
-        // Keep updating result with latest data
-        if (typeof data === 'object' && !data.type) {
-          result = data
-        }
-      } catch (e) {
-        // Not JSON, skip
       }
     }
   }
 
-  // Try to parse result as JSON if it's a string
-  if (typeof result === 'string') {
-    try {
-      result = JSON.parse(result)
-    } catch (e) {
-      // Keep as string
-    }
-  }
-
-  return result
+  throw new Error("No result received from TinyFish");
 }
