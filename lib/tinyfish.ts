@@ -1,5 +1,6 @@
 export async function runTinyFishAgent(url: string, goal: string): Promise<any> {
-  const response = await fetch("https://agent.tinyfish.ai/v1/automation/run-sse", {
+  // Use synchronous endpoint - simpler, no SSE parsing needed
+  const response = await fetch("https://agent.tinyfish.ai/v1/automation/run", {
     method: "POST",
     headers: {
       "X-API-Key": process.env.TINYFISH_API_KEY!,
@@ -14,38 +15,33 @@ export async function runTinyFishAgent(url: string, goal: string): Promise<any> 
     throw new Error(`TinyFish API error: ${response.status}`);
   }
 
-  const reader = response.body!.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
+  const run = await response.json();
+  
+  // Log the response structure for debugging
+  console.log("TinyFish response keys:", Object.keys(run));
+  console.log("TinyFish status:", run.status);
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-
-    for (const line of lines) {
-      if (line.startsWith("data: ")) {
-        try {
-          const event = JSON.parse(line.slice(6));
-
-          if (event.type === "PROGRESS") {
-            console.log(`TinyFish progress: ${event.purpose}`);
-          } else if (event.type === "COMPLETE") {
-            if (event.status === "COMPLETED") {
-              return event.resultJson;
-            }
-            throw new Error(event.error?.message || "Automation failed");
-          }
-        } catch (e: any) {
-          if (e.message === "Automation failed") throw e;
-          // JSON parse error, skip this line
-        }
-      }
-    }
+  // Check if completed successfully
+  if (run.status === "COMPLETED" || run.status === "completed") {
+    // Try all possible result fields
+    if (run.result) return run.result;
+    if (run.resultJson) return run.resultJson;
+    if (run.result_json) return run.result_json;
+    if (run.data) return run.data;
+    if (run.output) return run.output;
+    return run;
   }
 
-  throw new Error("No result received from TinyFish");
+  // If status is not completed but we have data
+  if (run.result) return run.result;
+  if (run.resultJson) return run.resultJson;
+  if (run.result_json) return run.result_json;
+  if (run.data) return run.data;
+  if (run.output) return run.output;
+
+  // Log full response if nothing matched
+  console.log("TinyFish full response:", JSON.stringify(run).slice(0, 500));
+  
+  // Return the whole response as last resort
+  return run;
 }
